@@ -44,6 +44,12 @@ def _extract_id(href: str, kind: str) -> int:
         return None
     m = re.search(rf"/{re.escape(kind)}/(\d+)", href)
     return int(m.group(1)) if m else None
+    
+def tg_escape(text: str) -> str:
+    # Телега в режиме HTML требует экранировать &, <, >
+    return (text.replace("&", "&amp;")
+                .replace("<", "&lt;")
+                .replace(">", "&gt;"))
 
 import gspread
 from google.oauth2.service_account import Credentials
@@ -276,16 +282,28 @@ def main():
     for cr in cr_list:
         try:
             detail = get_connected_realm_detail(token, cr)
+            # В некоторых ответах "realms" приходит как список словарей,
+            # в редких — попадаются строки/другие типы. Бережно обрабатываем.
+            realms = detail.get("realms", []) if isinstance(detail, dict) else []
             names = []
-            for realm in detail.get("realms", []):
-                nm = realm.get("name", {}).get("en_US") or realm.get("name", {}).get("ru_RU") or realm.get("slug")
-                if nm:
-                    names.append(nm)
+            for realm in realms:
+                if isinstance(realm, dict):
+                    name_dict = realm.get("name", {}) if isinstance(realm.get("name", {}), dict) else {}
+                    nm = (
+                        name_dict.get("en_GB") or  # в EU часто en_GB
+                        name_dict.get("en_US") or
+                        name_dict.get("ru_RU") or
+                        realm.get("slug")
+                    )
+                    if nm:
+                        names.append(nm)
+                # игнорируем строки/нестандартные элементы
             realm_names_cache[cr] = names or [f"CR-{cr}"]
         except Exception as e:
             realm_names_cache[cr] = [f"CR-{cr}"]
             print(f"realm detail failed for {cr}: {e}")
-        time.sleep(0.1)
+        time.sleep(0.05)
+
 
     # 6) скан аукционов по всем CR
     global_found = []
@@ -296,27 +314,55 @@ def main():
             found = check_items_in_auctions(aj, id_map, PRICE_THRESHOLD_G)
             if found:
                 for f in found:
-                    item = f["item_name"]
+                    # --- экранируем текст для Telegram
+                    item = tg_escape(f["item_name"])
+                    realms_txt = tg_escape(", ".join(realm_names_cache.get(cr, [f"CR-{cr}"])))
+                    time_left = tg_escape(str(f.get("time_left", "")))
+
+                    # --- подготавливаем значения
                     price = human_price(f["per_unit_copper"])
                     qty = f["quantity"]
                     auc = f["auction_id"]
-                    realms_txt = ", ".join(realm_names_cache.get(cr, [f"CR-{cr}"]))
-                    txt = (f"🔔 <b>{item}</b> ≤ {PRICE_THRESHOLD_G:.0f}g за шт.\n"
-                           f"Цена/шт: <b>{price}</b>  • Кол-во: {qty}\n"
-                           f"Сервера (EU): {realms_txt}\n"
-                           f"AuctionID: {auc}  • time_left: {f['time_left']}")
+
+                    # --- текст сообщения
+                    txt = (
+                        f"🔔 <b>{item}</b> ≤ {PRICE_THRESHOLD_G:.0f}g за шт.\n"
+                        f"Цена/шт: <b>{price}</b>  • Кол-во: {qty}\n"
+                        f"Сервера (EU): {realms_txt}\n"
+                        f"AuctionID: {auc}  • time_left: {time_left}"
+                    )
+
                     global_found.append(txt)
+
             time.sleep(SLEEP_BETWEEN_REALMS_SEC)
+
         except Exception as e:
             print(f"CR {cr} fetch error: {e}")
             time.sleep(1)
 
+
     # 7) шлём уведомления, только если есть находки
     if global_found:
-        msg = "🧭 <b>Найдены лоты</b> (EU):\n\n" + "\n\n".join(global_found)
-        send_telegram(msg)
+        header = "🧭 <b>Найдены лоты</b> (EU):\n\n"
+        # Экранируем каждую запись
+        chunks = []
+        cur = header
+        for block in global_found:
+            block_safe = tg_escape(block)
+            # Телега жёстко ограничивает ~4096 символов на message
+            if len(cur) + len(block_safe) + 2 > 3500:  # оставим запас
+                chunks.append(cur)
+                cur = header + block_safe + "\n\n"
+            else:
+                cur += block_safe + "\n\n"
+        if cur.strip():
+            chunks.append(cur)
+    
+        for part in chunks:
+            send_telegram(part)
     else:
         print("Nothing found; no notification sent.")
+
 
 if __name__ == "__main__":
     main()
