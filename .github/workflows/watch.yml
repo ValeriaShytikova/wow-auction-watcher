@@ -1,0 +1,35 @@
+name: WoW Auction Watcher (EU)
+
+on:
+  schedule:
+    - cron: "0 * * * *"   # каждый час
+  workflow_dispatch: {}
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install deps
+        run: pip install -r requirements.txt
+
+      - name: Run watcher
+        env:
+          BLIZZARD_CLIENT_ID: ${{ secrets.BLIZZARD_CLIENT_ID }}
+          BLIZZARD_CLIENT_SECRET: ${{ secrets.BLIZZARD_CLIENT_SECRET }}
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          GSHEET_SPREADSHEET_ID: ${{ vars.GSHEET_SPREADSHEET_ID }}
+          GSHEET_WORKSHEET_NAME: ${{ vars.GSHEET_WORKSHEET_NAME }}
+          GOOGLE_SERVICE_ACCOUNT_B64: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_B64 }}
+          PRICE_THRESHOLD_G: "5000"
+          SLEEP_BETWEEN_REALMS_SEC: "1"
+        run: python track_ah_gsheets.py
