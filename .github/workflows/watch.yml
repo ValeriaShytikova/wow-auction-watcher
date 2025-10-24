@@ -21,19 +21,18 @@ jobs:
       - name: Install deps
         run: pip install -r requirements.txt
 
-      # ⬇️ ВОТ ЭТОТ БЛОК — ВРЕМЕННЫЙ ОТЛАДОЧНЫЙ ШАГ
+      # ===== ВРЕМЕННЫЙ ОТЛАДОЧНЫЙ ШАГ (можно удалить после проверки) =====
       - name: Debug Blizzard token & realms
+        shell: bash
         env:
           BLIZZARD_CLIENT_ID: ${{ secrets.BLIZZARD_CLIENT_ID }}
           BLIZZARD_CLIENT_SECRET: ${{ secrets.BLIZZARD_CLIENT_SECRET }}
         run: |
+          set -e
           echo "Getting OAuth token…"
-          TOKEN=$(curl -s -u "$BLIZZARD_CLIENT_ID:$BLIZZARD_CLIENT_SECRET" \
-            -d grant_type=client_credentials https://oauth.battle.net/token | python - << 'PY'
-import sys, json
-print(json.load(sys.stdin).get("access_token",""))
-PY
-)
+          TOKEN=$(curl -s -u "${BLIZZARD_CLIENT_ID}:${BLIZZARD_CLIENT_SECRET}" \
+            -d grant_type=client_credentials https://oauth.battle.net/token \
+            | python -c "import sys,json; print(json.load(sys.stdin).get('access_token',''))")
           if [ -z "$TOKEN" ]; then
             echo "No token received"; exit 1
           fi
@@ -45,7 +44,7 @@ PY
           echo "HTTP $STATUS"
           head -c 400 resp.json || true
           echo
-      # ⬆️ ДО СЮДА — ВРЕМЕННЫЙ ОТЛАДОЧНЫЙ ШАГ
+      # ===== КОНЕЦ ОТЛАДОЧНОГО ШАГА =====
 
       - name: Run watcher
         env:
