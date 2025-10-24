@@ -11,6 +11,7 @@ REGION = "eu"
 NAMESPACE_DYNAMIC = f"dynamic-{REGION}"
 NAMESPACE_STATIC = f"static-{REGION}"
 LOCALE_CANDIDATES = ["ru_RU", "en_US"]  # пробуем обе локали по очереди
+USE_HTML = os.getenv("USE_HTML", "0") == "1"
 
 PRICE_THRESHOLD_G = float(os.getenv("PRICE_THRESHOLD_G", "5000"))  # 5000 золота
 SLEEP_BETWEEN_REALMS_SEC = int(os.getenv("SLEEP_BETWEEN_REALMS_SEC", "1"))  # чуть притормозим чтобы не долбить API
@@ -89,16 +90,26 @@ def human_price(copper: int) -> str:
     c = rem % 100
     return f"{g}g {s}s {c}c"
 
-def send_telegram(text: str):
+def send_telegram(text):
     if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
-        print("Telegram creds missing; printing instead:\n", text)
+        print("[TELEGRAM] missing creds; skip")
         return
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-    payload = {"chat_id": TELEGRAM_CHAT_ID, "text": text, "parse_mode": "HTML", "disable_web_page_preview": True}
+    payload = {
+        "chat_id": TELEGRAM_CHAT_ID,
+        "text": text,
+        # parse_mode только если явно включим HTML
+        **({"parse_mode": "HTML"} if USE_HTML else {}),
+        "disable_web_page_preview": True,
+    }
     try:
-        requests.post(url, data=payload, timeout=30).raise_for_status()
+        r = requests.post(url, data=payload, timeout=30)
+        if r.status_code != 200:
+            print(f"[TELEGRAM ERROR] {r.status_code}: {r.text[:400]}")
+            r.raise_for_status()
     except Exception as e:
         print("Telegram send failed:", e)
+
 
 # ----------- REALMS -----------
 def get_connected_realms(token: str) -> List[int]:
@@ -315,24 +326,29 @@ def main():
             if found:
                 for f in found:
                     # --- экранируем текст для Telegram
-                    item = tg_escape(f["item_name"])
-                    realms_txt = tg_escape(", ".join(realm_names_cache.get(cr, [f"CR-{cr}"])))
-                    time_left = tg_escape(str(f.get("time_left", "")))
-
-                    # --- подготавливаем значения
+                    item_name_raw = f["item_name"]              # без экранирования — мы же plain-text
+                    item_id = f["item_id"] if "item_id" in f else None  # добавь item_id в check_items_in_auctions, см. ниже
+                    realms_txt = ", ".join(n.replace("-", " ") for n in realm_names_cache.get(cr, [f"CR-{cr}"]))
+                    time_left = str(f.get("time_left", ""))
                     price = human_price(f["per_unit_copper"])
                     qty = f["quantity"]
                     auc = f["auction_id"]
-
-                    # --- текст сообщения
-                    txt = (
-                        f"🔔 <b>{item}</b> ≤ {PRICE_THRESHOLD_G:.0f}g за шт.\n"
-                        f"Цена/шт: <b>{price}</b>  • Кол-во: {qty}\n"
-                        f"Сервера (EU): {realms_txt}\n"
-                        f"AuctionID: {auc}  • time_left: {time_left}"
-                    )
-
+                    
+                    # при желании — короткая ссылка на wowhead
+                    wowhead = f"https://www.wowhead.com/item={item_id}" if item_id else ""
+                    
+                    txt_lines = [
+                        f"🔔 {item_name_raw}" + (f" (ID {item_id})" if item_id else ""),
+                        f"Цена/шт: {price}  • Кол-во: {qty}",
+                        f"Сервера (EU): {realms_txt}",
+                        f"AuctionID: {auc}  • time_left: {time_left}",
+                    ]
+                    if wowhead:
+                        txt_lines.append(wowhead)
+                    
+                    txt = "\n".join(txt_lines)
                     global_found.append(txt)
+
 
             time.sleep(SLEEP_BETWEEN_REALMS_SEC)
 
