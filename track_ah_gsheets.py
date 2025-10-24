@@ -190,33 +190,37 @@ def get_connected_realm_detail(token: str, cr_id: int) -> Dict:
     return r.json()
 
 # ----------- ITEM SEARCH -----------
-def search_item_id(token: str, name: str) -> Tuple[int, str]:
+def search_item_id(token: str, name: str) -> tuple[int, str]:
     """
-    Возвращает (item_id, display_name). Пробуем ru_RU, затем en_US.
-    Берём первый результат (orderby=id asc) как наиболее базовый вариант.
+    Возвращает (item_id, display_name) только при точном совпадении по английскому названию (без учёта регистра).
     """
     headers = {"Authorization": f"Bearer {token}"}
-    for loc in LOCALE_CANDIDATES:
-        params = {
-            "namespace": NAMESPACE_STATIC,
-            "orderby": "id",
-            "_pageSize": 1
-        }
-        # параметр имени: name.<locale>=...
-        params[f"name.{loc}"] = name
-        url = f"{BASE_API}/data/wow/search/item"
-        r = requests.get(url, headers=headers, params=params, timeout=60)
-        if r.status_code == 200:
-            data = r.json()
-            results = data.get("results", [])
-            if results:
-                item = results[0]
-                itm_id = item.get("data", {}).get("id")
-                # попытаемся вытащить красивое имя
-                display = item.get("data", {}).get("name", {}).get(loc) or item.get("text", name)
-                if itm_id:
-                    return int(itm_id), display or name
-    raise ValueError(f"Item not found by name: {name}")
+    params = {
+        "namespace": NAMESPACE_STATIC,
+        "_pageSize": 100,
+        "orderby": "id",
+        "name.en_US": name
+    }
+
+    url = f"{BASE_API}/data/wow/search/item"
+    r = requests.get(url, headers=headers, params=params, timeout=60)
+    r.raise_for_status()
+    data = r.json()
+
+    results = data.get("results", []) or []
+    wanted = name.strip().lower()
+
+    for it in results:
+        d = it.get("data", {}) or {}
+        item_id = d.get("id")
+        names = d.get("name", {}) or {}
+        en_name = (names.get("en_US") or "").strip().lower()
+        if en_name == wanted:
+            display_name = names.get("en_US") or names.get("ru_RU") or it.get("text") or name
+            return int(item_id), display_name
+
+    raise ValueError(f"Exact English match not found: {name}")
+
 
 # ----------- AUCTIONS -----------
 def get_auctions_for_connected_realm(token: str, cr_id: int) -> Dict:
