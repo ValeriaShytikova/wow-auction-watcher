@@ -33,6 +33,18 @@ COPPER_PER_GOLD = 10000
 
 # ----------- GOOGLE SHEETS (через gspread) -----------
 # Минималистично: не тащим гигантские libs. Возьмём gspread + google-auth
+import re
+
+def _extract_id(href: str, kind: str) -> int:
+    """
+    Достаёт числовой ID из ссылок вида .../connected-realm/1084?namespace=...
+    kind: 'connected-realm' | 'realm'
+    """
+    if not href:
+        return None
+    m = re.search(rf"/{re.escape(kind)}/(\d+)", href)
+    return int(m.group(1)) if m else None
+
 import gspread
 from google.oauth2.service_account import Credentials
 
@@ -104,18 +116,19 @@ def get_connected_realms(token: str) -> List[int]:
         items = data.get("connected_realms") or data.get("results") or []
         ids = []
         for it in items:
-            href = (it.get("href") or it.get("key",{}).get("href",""))
-            if not href: 
-                continue
-            try:
-                ids.append(int(href.rstrip("/").split("/")[-1]))
-            except:
-                pass
+            # пробуем разные формы ответа
+            href = (it.get("href")
+                    or it.get("key", {}).get("href", "")
+                    or it.get("_links", {}).get("self", {}).get("href", ""))
+            cr_id = _extract_id(href, "connected-realm")
+            if cr_id:
+                ids.append(cr_id)
         if ids:
             return sorted(set(ids))
         else:
             print("[DEBUG] CR index returned 200 but no IDs were parsed.")
-            print(f"[DEBUG] Keys: {list(data.keys())}")
+            print(f"[DEBUG] Example item: {str(items[0])[:300] if items else '[]'}")
+
 
     # --- Попытка №2 (fallback): realm index -> connected_realm
     print("[DEBUG] Fallback to realm index…")
