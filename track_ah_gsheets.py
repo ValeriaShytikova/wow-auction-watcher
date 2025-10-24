@@ -51,6 +51,10 @@ def tg_escape(text: str) -> str:
     return (text.replace("&", "&amp;")
                 .replace("<", "&lt;")
                 .replace(">", "&gt;"))
+    
+def pretty_realms(names):
+    # делаem читаемо: 'argent-dawn' -> 'Argent Dawn'
+    return ", ".join(n.replace("-", " ").title() for n in names)
 
 import gspread
 from google.oauth2.service_account import Credentials
@@ -317,38 +321,52 @@ def main():
 
 
     # 6) скан аукционов по всем CR
-    global_found = []
+    # Группируем находки: (item_id, item_name) -> { realm_str -> rec }
+    grouped = {}
 
     for idx, cr in enumerate(cr_list, 1):
         try:
             aj = get_auctions_for_connected_realm(token, cr)
             found = check_items_in_auctions(aj, id_map, PRICE_THRESHOLD_G)
             if found:
-                for f in found:
-                    # --- экранируем текст для Telegram
-                    item_name_raw = f["item_name"]              # без экранирования — мы же plain-text
-                    item_id = f["item_id"] if "item_id" in f else None  # добавь item_id в check_items_in_auctions, см. ниже
-                    realms_txt = ", ".join(n.replace("-", " ") for n in realm_names_cache.get(cr, [f"CR-{cr}"]))
-                    time_left = str(f.get("time_left", ""))
-                    price = human_price(f["per_unit_copper"])
-                    qty = f["quantity"]
-                    auc = f["auction_id"]
-                    
-                    # при желании — короткая ссылка на wowhead
-                    wowhead = f"https://www.wowhead.com/item={item_id}" if item_id else ""
-                    
-                    txt_lines = [
-                        f"🔔 {item_name_raw}" + (f" (ID {item_id})" if item_id else ""),
-                        f"Цена/шт: {price}  • Кол-во: {qty}",
-                        f"Сервера (EU): {realms_txt}",
-                        f"AuctionID: {auc}  • time_left: {time_left}",
-                    ]
-                    if wowhead:
-                        txt_lines.append(wowhead)
-                    
-                    txt = "\n".join(txt_lines)
-                    global_found.append(txt)
+                # красивое имя кластера реалмов
+                realms_names = realm_names_cache.get(cr, [f"CR-{cr}"])
+                realm_str = pretty_realms(realms_names)
 
+                # по одному предмету на этот connected realm оставим самый дешёвый per-unit и суммарный qty
+                per_item_best = {}  # item_id -> rec
+
+                for f in found:
+                    item_id = f.get("item_id")
+                    item_name = f["item_name"]
+                    price_copper = f["per_unit_copper"]
+                    qty = int(f["quantity"])
+                    auc = f.get("auction_id")
+                    time_left = str(f.get("time_left", ""))
+
+                    cur = per_item_best.get(item_id)
+                    if cur is None or price_copper < cur["per_unit_copper"]:
+                        per_item_best[item_id] = {
+                            "item_id": item_id,
+                            "item_name": item_name,
+                            "per_unit_copper": price_copper,
+                            "quantity": qty,
+                            "auction_id": auc,
+                            "time_left": time_left,
+                        }
+                    else:
+                        # если нашлась дороже — игнорируем, если такая же — докидываем количество
+                        if price_copper == cur["per_unit_copper"]:
+                            cur["quantity"] += qty
+
+                # теперь покладём лучшую запись по каждому предмету в общую группировку
+                for item_id, rec in per_item_best.items():
+                    key = (item_id, rec["item_name"])
+                    bucket = grouped.setdefault(key, {})
+                    # если по этому connected realm уже есть запись — оставляем более дешёвую
+                    prev = bucket.get(realm_str)
+                    if (prev is None) or (rec["per_unit_copper"] < prev["per_unit_copper"]):
+                        bucket[realm_str] = rec
 
             time.sleep(SLEEP_BETWEEN_REALMS_SEC)
 
@@ -357,27 +375,51 @@ def main():
             time.sleep(1)
 
 
+
     # 7) шлём уведомления, только если есть находки
-    if global_found:
-        header = "🧭 <b>Найдены лоты</b> (EU):\n\n"
-        # Экранируем каждую запись
-        chunks = []
-        cur = header
-        for block in global_found:
-            block_safe = tg_escape(block)
-            # Телега жёстко ограничивает ~4096 символов на message
-            if len(cur) + len(block_safe) + 2 > 3500:  # оставим запас
-                chunks.append(cur)
-                cur = header + block_safe + "\n\n"
-            else:
-                cur += block_safe + "\n\n"
-        if cur.strip():
-            chunks.append(cur)
-    
-        for part in chunks:
-            send_telegram(part)
+    # Отправляем: один предмет — одно сообщение со списком CR
+    if grouped:
+        header_tpl = "🧭 Найдены лоты (EU)\n"
+        # plain-text режим по умолчанию (USE_HTML = 0)
+        # если захочешь — включим HTML, но сейчас не надо
+
+        for (item_id, item_name), realms_map in grouped.items():
+            lines = [f"🔔 {item_name} (ID {item_id}) — порог ≤ {int(PRICE_THRESHOLD_G)}g/шт"]
+            # сортируем кластеры по цене
+            entries = sorted(
+                realms_map.items(),
+                key=lambda kv: kv[1]["per_unit_copper"]
+            )
+            for realm_str, rec in entries:
+                price = human_price(rec["per_unit_copper"])
+                qty = rec["quantity"]
+                auc = rec.get("auction_id")
+                tleft = rec.get("time_left", "")
+                lines.append(f"- {price} • x{qty} • {realm_str} • auc {auc} • {tleft}")
+
+            # при желании: короткая ссылка на wowhead
+            lines.append(f"https://www.wowhead.com/item={item_id}")
+
+            msg = header_tpl + "\n".join(lines)
+
+            # режем на чанки, если вдруг очень длинно
+            parts = []
+            cur = ""
+            for ln in msg.split("\n"):
+                if len(cur) + len(ln) + 1 > 3500:
+                    parts.append(cur)
+                    cur = ln + "\n"
+                else:
+                    cur += ln + "\n"
+            if cur.strip():
+                parts.append(cur)
+
+            for part in parts:
+                send_telegram(part)
+
     else:
         print("Nothing found; no notification sent.")
+
 
 
 if __name__ == "__main__":
