@@ -84,20 +84,69 @@ def send_telegram(text: str):
 
 # ----------- REALMS -----------
 def get_connected_realms(token: str) -> List[int]:
-    url = f"{BASE_API}/data/wow/connected-realm/index?namespace={NAMESPACE_DYNAMIC}&locale=en_US"
+    """
+    Возвращает список connected-realm IDs.
+    1) Пытаемся через официальный индекс connected-realm.
+    2) Если он пуст/ломается — fallback: читаем realm index и собираем connected_realm'ы.
+    """
     headers = {"Authorization": f"Bearer {token}"}
-    r = requests.get(url, headers=headers, timeout=60)
-    r.raise_for_status()
-    data = r.json()
-    ids = []
-    for it in data.get("connected_realms", []):
-        href = it.get("href", "")
-        try:
-            cr_id = int(href.rstrip("/").split("/")[-1])
-            ids.append(cr_id)
-        except:
-            pass
+
+    # --- Попытка №1: прямой индекс connected-realms
+    url_cr = f"{BASE_API}/data/wow/connected-realm/index"
+    params_cr = {"namespace": NAMESPACE_DYNAMIC, "locale": "en_US"}
+    r = requests.get(url_cr, headers=headers, params=params_cr, timeout=60)
+    if r.status_code != 200:
+        print(f"[DEBUG] CR index HTTP {r.status_code}")
+        print(f"[DEBUG] URL: {r.url}")
+        print(f"[DEBUG] Body: {r.text[:400]}")
+    else:
+        data = r.json()
+        items = data.get("connected_realms") or data.get("results") or []
+        ids = []
+        for it in items:
+            href = (it.get("href") or it.get("key",{}).get("href",""))
+            if not href: 
+                continue
+            try:
+                ids.append(int(href.rstrip("/").split("/")[-1]))
+            except:
+                pass
+        if ids:
+            return sorted(set(ids))
+        else:
+            print("[DEBUG] CR index returned 200 but no IDs were parsed.")
+            print(f"[DEBUG] Keys: {list(data.keys())}")
+
+    # --- Попытка №2 (fallback): realm index -> connected_realm
+    print("[DEBUG] Fallback to realm index…")
+    url_realm = f"{BASE_API}/data/wow/realm/index"
+    params_realm = {"namespace": NAMESPACE_DYNAMIC, "locale": "en_US"}
+    rr = requests.get(url_realm, headers=headers, params=params_realm, timeout=60)
+    if rr.status_code != 200:
+        print(f"[DEBUG] Realm index HTTP {rr.status_code}")
+        print(f"[DEBUG] URL: {rr.url}")
+        print(f"[DEBUG] Body: {rr.text[:400]}")
+        return []
+
+    data_r = rr.json()
+    realms = data_r.get("realms") or data_r.get("results") or []
+    cr_ids = set()
+    for it in realms:
+        # структура может быть {"key":{"href": .../realm/ID}, "data":{...}}; ищем connected_realm внутри "data" или через доп. запрос не пойдём — href должен быть внутри
+        d = it.get("data") if "data" in it else it
+        conn = (d.get("connected_realm", {}) if isinstance(d, dict) else {}).get("href", "")
+        if not conn and "connected_realm" in (it or {}):
+            conn = it["connected_realm"].get("href", "")
+        if conn:
+            try:
+                cr_ids.add(int(conn.rstrip("/").split("/")[-1]))
+            except:
+                pass
+    ids = sorted(cr_ids)
+    if not ids:
+        print("[DEBUG] Fallback also produced no IDs. Stopping.")
     return ids
+
 
 def get_connected_realm_detail(token: str, cr_id: int) -> Dict:
     url = f"{BASE_API}/data/wow/connected-realm/{cr_id}?namespace={NAMESPACE_DYNAMIC}&locale=en_US"
@@ -198,8 +247,16 @@ def main():
     # 4) берём все EU connected realms
     cr_list = get_connected_realms(token)
     if not cr_list:
-        print("No EU connected realms fetched. Exit.")
+        print("⚠️ No EU connected realms fetched. Retrying with a fresh token…")
+        time.sleep(2)
+        token = get_token(BLIZZARD_CLIENT_ID, BLIZZARD_CLIENT_SECRET)
+        cr_list = get_connected_realms(token)
+    
+    print(f"[DEBUG] EU connected realms: {len(cr_list)}")
+    if not cr_list:
+        print("❌ Still empty after retry; Blizzard API/namespace may be acting up. Exit.")
         return
+
 
     # 5) детализируем имена реалмов (кэш)
     realm_names_cache: Dict[int, List[str]] = {}
