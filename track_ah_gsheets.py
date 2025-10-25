@@ -1,21 +1,28 @@
-import os, time, json, base64, math, re
+# track_ah_gsheets.py
+# Рабочая база + добавлена поддержка per-item max_price из Google Sheet
+import os, time, json, base64, re
 from typing import List, Dict, Tuple
 import requests
 
+# ---- РЕГИОН/НЕЙМСПЕЙС (как в первой рабочей версии) ----
 REGION = "eu"
 NAMESPACE_DYNAMIC = f"dynamic-{REGION}"
 NAMESPACE_STATIC  = f"static-{REGION}"
+
+# ---- Локали для поиска предметов ----
 LOCALE_CANDIDATES = ["ru_RU", "en_US"]
 
-# Глобальный дефолт (если в Sheet пусто)
+# ---- Глобальный дефолт (если в Sheet пусто) ----
 PRICE_THRESHOLD_G = float(os.getenv("PRICE_THRESHOLD_G", "5000"))
 SLEEP_BETWEEN_REALMS_SEC = int(os.getenv("SLEEP_BETWEEN_REALMS_SEC", "1"))
 
+# ---- Креды ----
 BLIZZARD_CLIENT_ID = os.getenv("BLIZZARD_CLIENT_ID")
 BLIZZARD_CLIENT_SECRET = os.getenv("BLIZZARD_CLIENT_SECRET")
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
+# ---- Google Sheet ----
 GSHEET_SPREADSHEET_ID = os.getenv("GSHEET_SPREADSHEET_ID")
 GSHEET_WORKSHEET_NAME = os.getenv("GSHEET_WORKSHEET_NAME", "Items")
 GOOGLE_SERVICE_ACCOUNT_B64 = os.getenv("GOOGLE_SERVICE_ACCOUNT_B64")
@@ -24,6 +31,7 @@ BASE_AUTH = "https://oauth.battle.net/token"
 BASE_API  = f"https://{REGION}.api.blizzard.com"
 COPPER_PER_GOLD = 10000
 
+# ---- Google Sheets client (как было) ----
 import gspread
 from google.oauth2.service_account import Credentials
 
@@ -35,36 +43,32 @@ def get_gs_client():
     credentials = Credentials.from_service_account_info(creds_json, scopes=scopes)
     return gspread.authorize(credentials)
 
+# ---- Парсер цены из второго столбца ----
 def parse_price_to_gold(s: str) -> float:
     """
-    Парсим человекочитаемую строку цены в золоте:
-    Примеры: '5000', '4 500', '5k', '3,5k', '3500g', '3 500 g'
+    '5000', '4 500', '5k', '3,5k', '3500g', '3 500 g' -> float (gold)
+    Пусто/None -> None
     """
     if s is None:
         return None
     txt = str(s).strip().lower()
     if not txt:
         return None
-    # убрать лишние символы, но сохранить k/g и запятые
-    txt = re.sub(r"[^\dkg\.,\s]", "", txt)
+    txt = re.sub(r"[^\dkg\.,\s]", "", txt)  # оставить цифры/k/g/запятые/точки/пробел
     txt = txt.replace(" ", "")
-    # варианты с 'k'
     if "k" in txt:
-        num = txt.replace("k", "")
-        num = num.replace(",", ".")
-        try:
-            return float(num) * 1000.0
-        except:
-            return None
-    # варианты с 'g'
-    txt = txt.replace("g", "")
-    txt = txt.replace(",", ".")
-    try:
-        return float(txt)
-    except:
-        return None
+        num = txt.replace("k", "").replace(",", ".")
+        try: return float(num) * 1000.0
+        except: return None
+    txt = txt.replace("g", "").replace(",", ".")
+    try: return float(txt)
+    except: return None
 
 def load_items_with_thresholds(spreadsheet_id: str, worksheet_name: str) -> List[Tuple[str, float]]:
+    """
+    Ожидаем в листе Items 2 колонки:
+    item_name | max_price
+    """
     gc = get_gs_client()
     sh = gc.open_by_key(spreadsheet_id)
     ws = sh.worksheet(worksheet_name)
@@ -77,13 +81,15 @@ def load_items_with_thresholds(spreadsheet_id: str, worksheet_name: str) -> List
         raw_thr = r.get("max_price")
         thr = parse_price_to_gold(raw_thr) if raw_thr not in ("", None) else None
         items.append((name, thr))
-    return items  # [(name, per_item_gold_or_None), ...]
+    return items
 
+# ---- Blizzard auth (как было) ----
 def get_token(cid: str, secret: str) -> str:
-    r = requests.post(BASE_AUTH, data={"grant_type":"client_credentials"}, auth=(cid, secret), timeout=60)
+    r = requests.post(BASE_AUTH, data={"grant_type":"client_credentials"}, auth=(cid, secret))
     r.raise_for_status()
     return r.json()["access_token"]
 
+# ---- Утилиты ----
 def human_price(copper: int) -> str:
     g = copper // COPPER_PER_GOLD
     rem = copper % COPPER_PER_GOLD
@@ -102,6 +108,7 @@ def send_telegram(text: str):
     except Exception as e:
         print("Telegram send failed:", e)
 
+# ---- EXACT как в первой рабочей версии: индексы/детали CR через querystring ----
 def get_connected_realms(token: str) -> List[int]:
     url = f"{BASE_API}/data/wow/connected-realm/index?namespace={NAMESPACE_DYNAMIC}&locale=en_US"
     headers = {"Authorization": f"Bearer {token}"}
@@ -118,7 +125,6 @@ def get_connected_realms(token: str) -> List[int]:
             pass
     return ids
 
-
 def get_connected_realm_detail(token: str, cr_id: int) -> Dict:
     url = f"{BASE_API}/data/wow/connected-realm/{cr_id}?namespace={NAMESPACE_DYNAMIC}&locale=en_US"
     headers = {"Authorization": f"Bearer {token}"}
@@ -126,14 +132,13 @@ def get_connected_realm_detail(token: str, cr_id: int) -> Dict:
     r.raise_for_status()
     return r.json()
 
-
 def search_item_id(token: str, name: str) -> Tuple[int, str]:
     headers = {"Authorization": f"Bearer {token}"}
-    url = f"{BASE_API}/data/wow/search/item"
+    # тоже строго как было: querystring с namespace/static и локалями
+    base = f"{BASE_API}/data/wow/search/item"
     for loc in LOCALE_CANDIDATES:
-        params = {"namespace": NAMESPACE_STATIC, "orderby": "id", "_pageSize": 1}
-        params[f"name.{loc}"] = name
-        r = requests.get(url, headers=headers, params=params, timeout=60)
+        url = f"{base}?namespace={NAMESPACE_STATIC}&orderby=id&_pageSize=1&name.{loc}={requests.utils.quote(name)}"
+        r = requests.get(url, headers=headers)
         if r.status_code == 200:
             data = r.json()
             res = data.get("results", [])
@@ -146,10 +151,9 @@ def search_item_id(token: str, name: str) -> Tuple[int, str]:
     raise ValueError(f"Item not found: {name}")
 
 def get_auctions_for_connected_realm(token: str, cr_id: int) -> Dict:
-    url = f"{BASE_API}/data/wow/connected-realm/{cr_id}/auctions"
-    params = {"namespace": NAMESPACE_DYNAMIC, "locale": "en_US"}
+    url = f"{BASE_API}/data/wow/connected-realm/{cr_id}/auctions?namespace={NAMESPACE_DYNAMIC}&locale=en_US"
     headers = {"Authorization": f"Bearer {token}"}
-    r = requests.get(url, headers=headers, params=params, timeout=120)
+    r = requests.get(url, headers=headers)
     r.raise_for_status()
     return r.json()
 
@@ -190,7 +194,7 @@ def main():
         print("No items in sheet. Exit.")
         return
 
-    # 2) резолвим item_id и собираем карты: id->name, id->threshold_gold
+    # 2) резолвим item_id; собираем карты id->name и id->threshold_gold
     id_to_name: Dict[int,str] = {}
     id_to_thr:  Dict[int,float] = {}
     for name, per_item_thr in rows:
@@ -205,13 +209,13 @@ def main():
         print("No resolvable items. Exit.")
         return
 
-    # 3) EU connected realms
+    # 3) список EU connected realms (как было)
     cr_list = get_connected_realms(token)
     if not cr_list:
         print("No EU connected realms. Exit.")
         return
 
-    # 4) имена реалмов (кэш)
+    # 4) читаем имена реалмов (как было)
     realm_names_cache: Dict[int, List[str]] = {}
     for cr in cr_list:
         try:
@@ -219,15 +223,14 @@ def main():
             names = []
             for realm in detail.get("realms", []):
                 nm = realm.get("name", {}).get("en_US") or realm.get("name", {}).get("ru_RU") or realm.get("slug")
-                if nm:
-                    names.append(nm)
+                if nm: names.append(nm)
             realm_names_cache[cr] = names or [f"CR-{cr}"]
         except Exception as e:
             realm_names_cache[cr] = [f"CR-{cr}"]
             print(f"[WARN] realm detail {cr}: {e}")
         time.sleep(0.1)
 
-    # 5) скан
+    # 5) скан аукционов
     global_found = []
     for cr in cr_list:
         try:
