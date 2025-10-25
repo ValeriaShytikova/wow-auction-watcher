@@ -110,20 +110,32 @@ def send_telegram(text: str):
 
 # ---- EXACT как в первой рабочей версии: индексы/детали CR через querystring ----
 def get_connected_realms(token: str) -> List[int]:
+    # Универсальный парсер для обоих форматов Blizzard:
+    # [{ "href": "..." }, ...] И/ИЛИ [{ "key": { "href": "..." } }, ...]
     url = f"{BASE_API}/data/wow/connected-realm/index?namespace={NAMESPACE_DYNAMIC}&locale=en_US"
     headers = {"Authorization": f"Bearer {token}"}
     r = requests.get(url, headers=headers)
     r.raise_for_status()
     data = r.json()
+
+    items = data.get("connected_realms", [])
+    # небольшой лог, поможет если опять будет пусто
+    print(f"[DEBUG] EU connected_realms in index: {len(items)}")
+    if items[:1]:
+        print(f"[DEBUG] sample item: {items[0]}")
+
     ids = []
-    for it in data.get("connected_realms", []):
-        href = it.get("href", "")
+    for it in items:
+        href = it.get("href") or it.get("key", {}).get("href")
+        if not href:
+            continue
         try:
             cr_id = int(href.rstrip("/").split("/")[-1])
             ids.append(cr_id)
-        except:
-            pass
+        except Exception as e:
+            print(f"[WARN] cannot parse CR id from href={href}: {e}")
     return ids
+
 
 def get_connected_realm_detail(token: str, cr_id: int) -> Dict:
     url = f"{BASE_API}/data/wow/connected-realm/{cr_id}?namespace={NAMESPACE_DYNAMIC}&locale=en_US"
