@@ -103,28 +103,29 @@ def send_telegram(text: str):
         print("Telegram send failed:", e)
 
 def get_connected_realms(token: str) -> List[int]:
-    url = f"{BASE_API}/data/wow/connected-realm/index"
-    params = {"namespace": NAMESPACE_DYNAMIC, "locale": "en_US"}
+    url = f"{BASE_API}/data/wow/connected-realm/index?namespace={NAMESPACE_DYNAMIC}&locale=en_US"
     headers = {"Authorization": f"Bearer {token}"}
-    r = requests.get(url, headers=headers, params=params, timeout=60)
+    r = requests.get(url, headers=headers)
     r.raise_for_status()
     data = r.json()
     ids = []
     for it in data.get("connected_realms", []):
         href = it.get("href", "")
         try:
-            ids.append(int(href.rstrip("/").split("/")[-1]))
+            cr_id = int(href.rstrip("/").split("/")[-1])
+            ids.append(cr_id)
         except:
             pass
     return ids
 
+
 def get_connected_realm_detail(token: str, cr_id: int) -> Dict:
-    url = f"{BASE_API}/data/wow/connected-realm/{cr_id}"
-    params = {"namespace": NAMESPACE_DYNAMIC, "locale":"en_US"}
+    url = f"{BASE_API}/data/wow/connected-realm/{cr_id}?namespace={NAMESPACE_DYNAMIC}&locale=en_US"
     headers = {"Authorization": f"Bearer {token}"}
-    r = requests.get(url, headers=headers, params=params, timeout=60)
+    r = requests.get(url, headers=headers)
     r.raise_for_status()
     return r.json()
+
 
 def search_item_id(token: str, name: str) -> Tuple[int, str]:
     headers = {"Authorization": f"Bearer {token}"}
