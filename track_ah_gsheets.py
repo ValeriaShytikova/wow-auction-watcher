@@ -109,9 +109,10 @@ def send_telegram(text: str):
         print("Telegram send failed:", e)
 
 # ---- EXACT как в первой рабочей версии: индексы/детали CR через querystring ----
+from urllib.parse import urlparse
+
 def get_connected_realms(token: str) -> List[int]:
-    # Универсальный парсер для обоих форматов Blizzard:
-    # [{ "href": "..." }, ...] И/ИЛИ [{ "key": { "href": "..." } }, ...]
+    # поддерживаем оба формата: {"href": "..."} ИЛИ {"key": {"href": "..."}}
     url = f"{BASE_API}/data/wow/connected-realm/index?namespace={NAMESPACE_DYNAMIC}&locale=en_US"
     headers = {"Authorization": f"Bearer {token}"}
     r = requests.get(url, headers=headers)
@@ -119,7 +120,6 @@ def get_connected_realms(token: str) -> List[int]:
     data = r.json()
 
     items = data.get("connected_realms", [])
-    # небольшой лог, поможет если опять будет пусто
     print(f"[DEBUG] EU connected_realms in index: {len(items)}")
     if items[:1]:
         print(f"[DEBUG] sample item: {items[0]}")
@@ -130,11 +130,15 @@ def get_connected_realms(token: str) -> List[int]:
         if not href:
             continue
         try:
-            cr_id = int(href.rstrip("/").split("/")[-1])
+            # аккуратно вытащим id из path, игнорируя query (?namespace=...)
+            path = urlparse(href).path  # например: /data/wow/connected-realm/1080
+            last = path.rstrip("/").split("/")[-1]  # '1080'
+            cr_id = int(last)
             ids.append(cr_id)
         except Exception as e:
             print(f"[WARN] cannot parse CR id from href={href}: {e}")
     return ids
+
 
 
 def get_connected_realm_detail(token: str, cr_id: int) -> Dict:
