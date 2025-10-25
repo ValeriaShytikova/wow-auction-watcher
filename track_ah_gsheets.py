@@ -96,21 +96,27 @@ def parse_price_to_gold(s: str):
 def load_items_with_thresholds(spreadsheet_id: str, worksheet_name: str):
     """
     Читает лист Items и возвращает список (name, per_item_thr_or_None).
-    Ожидаемые колонки: item_name | max_price
+    Принимает гибкие заголовки: item_name / Item Name, max_price / MaxPrice / Max Price.
     """
     gc = get_gs_client()
     sh = gc.open_by_key(spreadsheet_id)
     ws = sh.worksheet(worksheet_name)
     rows = ws.get_all_records()  # [{'item_name': '...', 'max_price': '...'}, ...]
+
     items = []
     for r in rows:
-        name = (r.get("item_name") or "").strip()
+        # нормализуем ключи: нижний регистр, убираем пробелы, дефисы, приводим к snake_case
+        r_norm = {str(k).strip().lower().replace(" ", "_").replace("-", "_"): v for k, v in r.items()}
+
+        name = (r_norm.get("item_name") or r_norm.get("item") or r_norm.get("name") or "").strip()
         if not name:
             continue
-        raw_thr = r.get("max_price")
+
+        raw_thr = r_norm.get("max_price") or r_norm.get("maxprice") or r_norm.get("price_max")
         thr = parse_price_to_gold(raw_thr) if raw_thr not in ("", None) else None
         items.append((name, thr))
     return items
+
 
 def load_item_names_from_sheet(spreadsheet_id: str, worksheet_name: str) -> List[str]:
     gc = get_gs_client()
@@ -475,7 +481,9 @@ def main():
         # если захочешь — включим HTML, но сейчас не надо
 
         for (item_id, item_name), realms_map in grouped.items():
-            lines = [f"🔔 {item_name} (ID {item_id}) — порог ≤ {int(PRICE_THRESHOLD_G)}g/шт"]
+            thr_show = int(id_thr.get(item_id, PRICE_THRESHOLD_G))
+            lines = [f"🔔 {item_name} (ID {item_id}) — порог ≤ {thr_show}g/шт"]
+
             # сортируем кластеры по цене
             entries = sorted(
                 realms_map.items(),
