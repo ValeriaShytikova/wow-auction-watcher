@@ -8,20 +8,67 @@ on:
 jobs:
   run:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
+
     steps:
       - name: Checkout repo
         uses: actions/checkout@v4
 
-      - name: Set up Python
+      - name: Set up Python 3.11
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
+          cache: "pip"
 
-      - name: Install deps
-        run: pip install -r requirements.txt
+      - name: Show env (debug)
+        run: |
+          echo "Has BLIZZARD_CLIENT_ID? ${{ secrets.BLIZZARD_CLIENT_ID != '' }}"
+          echo "Has BLIZZARD_CLIENT_SECRET? ${{ secrets.BLIZZARD_CLIENT_SECRET != '' }}"
+          echo "Has TELEGRAM_TOKEN? ${{ secrets.TELEGRAM_TOKEN != '' }}"
+          echo "Has TELEGRAM_CHAT_ID? ${{ secrets.TELEGRAM_CHAT_ID != '' }}"
+          echo "Has GOOGLE_SERVICE_ACCOUNT_B64? ${{ secrets.GOOGLE_SERVICE_ACCOUNT_B64 != '' }}"
+          echo "GSHEET_SPREADSHEET_ID=${{ vars.GSHEET_SPREADSHEET_ID }}"
+          echo "GSHEET_WORKSHEET_NAME=${{ vars.GSHEET_WORKSHEET_NAME }}"
+          echo "PRICE_THRESHOLD_G=${{ vars.PRICE_THRESHOLD_G }}"
 
-      - name: Run watcher
+      - name: Install exact deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install "requests==2.32.3" "gspread==6.1.2" "google-auth==2.34.0"
+
+      # Диагностика: проверяем токен Blizzard и наличие connected realms в EU
+      - name: Sanity check Blizzard EU realms
+        env:
+          BLIZZARD_CLIENT_ID: ${{ secrets.BLIZZARD_CLIENT_ID }}
+          BLIZZARD_CLIENT_SECRET: ${{ secrets.BLIZZARD_CLIENT_SECRET }}
+        run: |
+          python - << 'PY'
+          import requests, sys
+          cid = "${{ secrets.BLIZZARD_CLIENT_ID }}"
+          cs  = "${{ secrets.BLIZZARD_CLIENT_SECRET }}"
+          if not cid or not cs:
+              print("NO CLIENT CREDS"); sys.exit(1)
+          # Берём токен
+          r = requests.post("https://oauth.battle.net/token",
+                            data={"grant_type":"client_credentials"},
+                            auth=(cid, cs))
+          r.raise_for_status()
+          token = r.json()["access_token"]
+          # Индекс EU connected realms
+          url = "https://eu.api.blizzard.com/data/wow/connected-realm/index?namespace=dynamic-eu&locale=en_US"
+          h = {"Authorization": f"Bearer {token}"}
+          rr = requests.get(url, headers=h)
+          print("EU index status:", rr.status_code)
+          rr.raise_for_status()
+          js = rr.json()
+          items = js.get("connected_realms", [])
+          print("EU connected_realms count:", len(items))
+          if items[:1]:
+              print("Sample:", items[0])
+          # Если вдруг 0 — выходим с кодом 0, чтобы не падать; основной шаг сам ещё раз проверит
+          PY
+
+      - name: Run watcher (hourly)
         env:
           BLIZZARD_CLIENT_ID: ${{ secrets.BLIZZARD_CLIENT_ID }}
           BLIZZARD_CLIENT_SECRET: ${{ secrets.BLIZZARD_CLIENT_SECRET }}
@@ -30,6 +77,7 @@ jobs:
           GSHEET_SPREADSHEET_ID: ${{ vars.GSHEET_SPREADSHEET_ID }}
           GSHEET_WORKSHEET_NAME: ${{ vars.GSHEET_WORKSHEET_NAME }}
           GOOGLE_SERVICE_ACCOUNT_B64: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_B64 }}
-          PRICE_THRESHOLD_G: ${{ vars.PRICE_THRESHOLD_G }}   # <— теперь из Variables
+          PRICE_THRESHOLD_G: ${{ vars.PRICE_THRESHOLD_G }}
           SLEEP_BETWEEN_REALMS_SEC: "1"
-        run: python track_ah_gsheets.py
+        run: |
+          python track_ah_gsheets.py
