@@ -21,31 +21,6 @@ jobs:
       - name: Install deps
         run: pip install -r requirements.txt
 
-      # ===== ВРЕМЕННЫЙ ОТЛАДОЧНЫЙ ШАГ (можно удалить после проверки) =====
-      - name: Debug Blizzard token & realms
-        shell: bash
-        env:
-          BLIZZARD_CLIENT_ID: ${{ secrets.BLIZZARD_CLIENT_ID }}
-          BLIZZARD_CLIENT_SECRET: ${{ secrets.BLIZZARD_CLIENT_SECRET }}
-        run: |
-          set -e
-          echo "Getting OAuth token…"
-          TOKEN=$(curl -s -u "${BLIZZARD_CLIENT_ID}:${BLIZZARD_CLIENT_SECRET}" \
-            -d grant_type=client_credentials https://oauth.battle.net/token \
-            | python -c "import sys,json; print(json.load(sys.stdin).get('access_token',''))")
-          if [ -z "$TOKEN" ]; then
-            echo "No token received"; exit 1
-          fi
-          echo "Token acquired (hidden)"
-          echo "Calling EU connected-realm index…"
-          STATUS=$(curl -s -o resp.json -w "%{http_code}" \
-            -H "Authorization: Bearer $TOKEN" \
-            "https://eu.api.blizzard.com/data/wow/connected-realm/index?namespace=dynamic-eu&locale=en_US")
-          echo "HTTP $STATUS"
-          head -c 400 resp.json || true
-          echo
-      # ===== КОНЕЦ ОТЛАДОЧНОГО ШАГА =====
-
       - name: Run watcher
         env:
           BLIZZARD_CLIENT_ID: ${{ secrets.BLIZZARD_CLIENT_ID }}
@@ -55,6 +30,6 @@ jobs:
           GSHEET_SPREADSHEET_ID: ${{ vars.GSHEET_SPREADSHEET_ID }}
           GSHEET_WORKSHEET_NAME: ${{ vars.GSHEET_WORKSHEET_NAME }}
           GOOGLE_SERVICE_ACCOUNT_B64: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_B64 }}
-          PRICE_THRESHOLD_G: "5000"
+          PRICE_THRESHOLD_G: ${{ vars.PRICE_THRESHOLD_G }}   # <— теперь из Variables
           SLEEP_BETWEEN_REALMS_SEC: "1"
         run: python track_ah_gsheets.py
