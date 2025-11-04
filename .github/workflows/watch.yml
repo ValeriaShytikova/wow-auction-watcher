@@ -2,7 +2,7 @@ name: WoW Auction Watcher (EU)
 
 on:
   schedule:
-    - cron: "0 * * * *"   # каждый час
+    - cron: "*/30 * * * *"   # каждые пол часа
   workflow_dispatch: {}
 
 jobs:
