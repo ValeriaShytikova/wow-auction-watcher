@@ -108,7 +108,13 @@ def load_items_with_thresholds(spreadsheet_id: str, worksheet_name: str):
         # нормализуем ключи: нижний регистр, убираем пробелы, дефисы, приводим к snake_case
         r_norm = {str(k).strip().lower().replace(" ", "_").replace("-", "_"): v for k, v in r.items()}
 
-        name = (r_norm.get("item_name") or r_norm.get("item") or r_norm.get("name") or "").strip()
+        # --- ИСПРАВЛЕНИЕ ТУТ ---
+        # Сначала достаем "сырое" значение
+        raw_val = r_norm.get("item_name") or r_norm.get("item") or r_norm.get("name")
+        # Принудительно превращаем в строку (str), даже если там число 6390
+        name = str(raw_val).strip() if raw_val is not None else ""
+        # -----------------------
+
         if not name:
             continue
 
