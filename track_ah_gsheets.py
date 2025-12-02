@@ -356,22 +356,28 @@ def main():
         print("No item names in the sheet. Exit quietly.")
         return
     
-    # 3) резолвим в item_id и собираем два словаря:
-    #    id_map: id -> display_name
-    #    id_thr: id -> threshold_gold (per-item), если None -> подставим глобальный ниже
+# 3) резолвим в item_id и собираем два словаря:
     id_map: Dict[int, str] = {}
     id_thr: Dict[int, float] = {}
+    
     for (name, per_item_thr) in rows:
+        # --- НАЧАЛО ИЗМЕНЕНИЙ ---
+        # Если в ячейке только цифры — считаем, что это ID, и не мучаем поиск
+        if name.isdigit():
+            itm_id = int(name)
+            # В идеале тут бы сделать запрос к API за названием, 
+            # но чтобы не усложнять код, запишем пока просто ID
+            id_map[itm_id] = f"Item ID {itm_id} (Manual)"
+            id_thr[itm_id] = per_item_thr if per_item_thr is not None else PRICE_THRESHOLD_G
+            continue
+        # --- КОНЕЦ ИЗМЕНЕНИЙ ---
+
         try:
             itm_id, disp = search_item_id(token, name)
             id_map[itm_id] = disp
             id_thr[itm_id] = per_item_thr if per_item_thr is not None else PRICE_THRESHOLD_G
         except Exception as e:
             print(f"Name -> id not found for '{name}': {e}")
-    
-    if not id_map:
-        print("No resolvable items. Exit quietly.")
-        return
 
 
     # 4) берём все EU connected realms
