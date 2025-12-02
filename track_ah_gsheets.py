@@ -67,6 +67,27 @@ def get_gs_client():
     credentials = Credentials.from_service_account_info(creds_json, scopes=scopes)
     return gspread.authorize(credentials)
 
+# ----------- НОВАЯ ФУНКЦИЯ: Узнаем имя по ID -----------
+def get_item_name_by_id(token: str, item_id: int) -> str:
+    """
+    Делает прямой запрос к Blizzard API, чтобы узнать название предмета по его ID.
+    """
+    url = f"{BASE_API}/data/wow/item/{item_id}"
+    # Используем static namespace, где хранятся названия предметов
+    params = {"namespace": NAMESPACE_STATIC, "locale": "en_US"}
+    headers = {"Authorization": f"Bearer {token}"}
+    
+    try:
+        r = requests.get(url, headers=headers, params=params, timeout=10)
+        if r.status_code == 200:
+            data = r.json()
+            return data.get("name") or f"Item {item_id}"
+    except Exception as e:
+        print(f"[WARN] Failed to fetch name for ID {item_id}: {e}")
+    
+    # Если не удалось узнать имя, вернем ID как запасной вариант
+    return f"Item ID {item_id}"
+    
 def parse_price_to_gold(s: str):
     """
     Парсим '5000', '4 500', '5k', '3,5k', '3500g', '3 500 g' -> float (gold).
@@ -365,19 +386,22 @@ def main():
 # 3) резолвим в item_id и собираем два словаря:
     id_map: Dict[int, str] = {}
     id_thr: Dict[int, float] = {}
-    
+
     for (name, per_item_thr) in rows:
-        # --- НАЧАЛО ИЗМЕНЕНИЙ ---
-        # Если в ячейке только цифры — считаем, что это ID, и не мучаем поиск
+        # ВАРИАНТ 1: Если в таблице только цифры (ID)
         if name.isdigit():
             itm_id = int(name)
-            # В идеале тут бы сделать запрос к API за названием, 
-            # но чтобы не усложнять код, запишем пока просто ID
-            id_map[itm_id] = f"Item ID {itm_id} (Manual)"
+            
+            # --- МАГИЯ ТУТ: Спрашиваем имя у API ---
+            print(f"[INFO] Fetching name for ID {itm_id}...")
+            pretty_name = get_item_name_by_id(token, itm_id)
+            # ---------------------------------------
+            
+            id_map[itm_id] = pretty_name
             id_thr[itm_id] = per_item_thr if per_item_thr is not None else PRICE_THRESHOLD_G
             continue
-        # --- КОНЕЦ ИЗМЕНЕНИЙ ---
 
+        # ВАРИАНТ 2: Если в таблице текст — ищем поиск по старинке
         try:
             itm_id, disp = search_item_id(token, name)
             id_map[itm_id] = disp
